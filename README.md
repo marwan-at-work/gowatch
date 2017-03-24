@@ -22,7 +22,7 @@ it reads your current working directory and runs the two typical commands:
 
 So this only works in `main` packages and you have to have a `main.go`
 
-Also, this ignores your `vendor` folder.
+Also, this ignores your `vendor` folder & your `_test.go` files.
 
 #### FAQ
 
