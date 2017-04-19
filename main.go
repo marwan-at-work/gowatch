@@ -1,11 +1,10 @@
 package main
 
 import (
-	"bufio"
-	"fmt"
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/fatih/color"
@@ -34,32 +33,23 @@ func killCmd(cmd *exec.Cmd) (err error) {
 }
 
 func runCmd() *exec.Cmd {
-	sub := exec.Command("go", "build", "main.go")
+	_, dirName := filepath.Split(path)
+	sub := exec.Command("go", "build")
 	sub.Dir = path
-	err := sub.Run()
+	_, err := sub.Output()
 	if err != nil {
-		log.Fatal(err)
+		switch err.(type) {
+		case *exec.ExitError:
+			log.Fatal(string(err.(*exec.ExitError).Stderr))
+		default:
+			log.Fatal(err)
+		}
 	}
 
-	cmd := exec.Command("./main")
+	cmd := exec.Command("./" + dirName)
 	cmd.Dir = path
-	out, _ := cmd.StdoutPipe()
-	scanner := bufio.NewScanner(out)
-	go func() {
-		for scanner.Scan() {
-			fmt.Println(scanner.Text())
-		}
-		out.Close()
-	}()
-
-	out2, _ := cmd.StderrPipe()
-	scanner2 := bufio.NewScanner(out2)
-	go func() {
-		for scanner2.Scan() {
-			fmt.Println(scanner2.Text())
-		}
-		out2.Close()
-	}()
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
 
 	err = cmd.Start()
 	if err != nil {
