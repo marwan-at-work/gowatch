@@ -1,5 +1,5 @@
 # gowatch
-A simple `.go` file watcher that will stop & restart `main.go` on file changes.
+A simple `.go` file watcher that will stop & restart your `main()` function on file changes.
 
 ## Motivation
 
@@ -16,11 +16,11 @@ from your main app directory, run `gowatch`
 
 it reads your current working directory and runs the two typical commands:
 
-- `go build main.go`
+- `go build`
 
-- `./main`
+- `./<name-of-compiled-binary>`
 
-So this only works in `main` packages and you have to have a `main.go`
+So this only works in `main` packages.
 
 Also, this ignores your `vendor` folder & your `_test.go` files.
 
@@ -28,7 +28,7 @@ Also, this ignores your `vendor` folder & your `_test.go` files.
 
 Q: Why doesn't it just run `go run main.go`?
 
-A: `go run` does the same thing as `go build`, but calls the resulting binary as a subprocess. This makes it harder to reach `stdout` and killing the `main.go` process, won't necessarily kill the subprocess, so you end up trying to run the server twice.
+A: `go run` does the same thing as `go build`, but calls the resulting binary as a subprocess. This makes it harder to reach `stdout` and killing the `main.go` process, won't necessarily kill the subprocess, so you end up trying to run the server twice (which ends up with "port is already taken" kind of error).
 
 Q: But there's a bunch of those file watchers out there already.
 
