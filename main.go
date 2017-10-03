@@ -78,6 +78,7 @@ func runCmd() *exec.Cmd {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Args = append(cmd.Args, args[1:]...)
+	cmd.Env = os.Environ()
 
 	err = cmd.Start()
 	if err != nil {
