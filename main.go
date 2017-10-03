@@ -12,8 +12,13 @@ import (
 )
 
 var path string
+var args []string
+var buildTags string
+var includeVendor bool
 
 func main() {
+	args = parseArgs()
+
 	var err error
 	path, err = os.Getwd()
 	if err != nil {
@@ -21,6 +26,23 @@ func main() {
 	}
 
 	watch(runCmd())
+}
+
+func parseArgs() []string {
+	args := []string{}
+	for _, s := range os.Args {
+		if strings.HasPrefix(s, "--build-tags=") {
+			buildTags = strings.Split(s, "=")[1]
+			continue
+		} else if strings.HasPrefix(s, "--include-vendor") {
+			includeVendor = true
+			continue
+		}
+
+		args = append(args, s)
+	}
+
+	return args
 }
 
 func killCmd(cmd *exec.Cmd) (err error) {
@@ -34,7 +56,12 @@ func killCmd(cmd *exec.Cmd) (err error) {
 
 func runCmd() *exec.Cmd {
 	_, dirName := filepath.Split(path)
-	sub := exec.Command("go", "build")
+	buildArgs := []string{"build"}
+	if buildTags != "" {
+		buildArgs = append(buildArgs, "-tags", buildTags)
+	}
+
+	sub := exec.Command("go", buildArgs...)
 	sub.Dir = path
 	_, err := sub.Output()
 	if err != nil {
@@ -50,6 +77,7 @@ func runCmd() *exec.Cmd {
 	cmd.Dir = path
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	cmd.Args = append(cmd.Args, args[1:]...)
 
 	err = cmd.Start()
 	if err != nil {
@@ -102,9 +130,11 @@ func getFiles(path string) []string {
 		fileName := file.Name()
 		newPath := path + "/" + fileName
 
-		isValidDir := file.IsDir() &&
-			!strings.HasPrefix(fileName, ".") &&
-			fileName != "vendor"
+		isValidDir := file.IsDir() && !strings.HasPrefix(fileName, ".")
+
+		if !includeVendor {
+			isValidDir = isValidDir && fileName != "vendor"
+		}
 
 		isValidFile := !file.IsDir() &&
 			strings.HasSuffix(fileName, ".go") &&
