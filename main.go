@@ -22,7 +22,7 @@ func main() {
 	var err error
 	path, err = os.Getwd()
 	if err != nil {
-		log.Fatalf("could not get current working directory: %v", err.Error())
+		log.Fatalf("could not get current working directory: %v\n", err)
 	}
 
 	watch(runCmd())
@@ -45,13 +45,13 @@ func parseArgs() []string {
 	return args
 }
 
-func killCmd(cmd *exec.Cmd) (err error) {
-	if err = cmd.Process.Kill(); err != nil {
-		log.Fatal(err)
+func killCmd(cmd *exec.Cmd) error {
+	if err := cmd.Process.Kill(); err != nil {
+		return err
 	}
 
-	_, err = cmd.Process.Wait()
-	return
+	_, err := cmd.Process.Wait()
+	return err
 }
 
 func runCmd() *exec.Cmd {
