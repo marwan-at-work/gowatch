@@ -15,6 +15,7 @@ var path string
 var args []string
 var buildTags string
 var includeVendor bool
+var wd string
 
 func main() {
 	args = parseArgs()
@@ -36,6 +37,9 @@ func parseArgs() []string {
 			continue
 		} else if strings.HasPrefix(s, "--include-vendor") {
 			includeVendor = true
+			continue
+		} else if strings.HasPrefix(s, "--watch-dir=") {
+			wd = strings.Split(s, "=")[1]
 			continue
 		}
 
@@ -109,7 +113,10 @@ func watch(cmd *exec.Cmd) {
 	}()
 
 	errs := []error{}
-	for _, p := range getFiles(path) {
+	if wd == "" {
+		wd = path
+	}
+	for _, p := range getFiles(wd) {
 		errs = append(errs, watcher.Add(p))
 	}
 
