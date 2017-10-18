@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"log"
 	"os"
 	"os/exec"
@@ -100,7 +99,6 @@ func watch(cmd *exec.Cmd) {
 	}
 	defer watcher.Close()
 
-	done := make(chan bool)
 	go func() {
 		for event := range watcher.Events {
 			if event.Op&fsnotify.Write == fsnotify.Write {
@@ -119,9 +117,6 @@ func watch(cmd *exec.Cmd) {
 	}
 
 	files := getFiles(wd)
-
-	fmt.Println("watching:", files)
-
 	for _, p := range files {
 		errs = append(errs, watcher.Add(p))
 	}
@@ -131,7 +126,8 @@ func watch(cmd *exec.Cmd) {
 			log.Fatal(err)
 		}
 	}
-	<-done
+
+	<-make(chan struct{})
 }
 
 func getFiles(path string) []string {
