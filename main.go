@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"os"
 	"os/exec"
@@ -116,7 +117,12 @@ func watch(cmd *exec.Cmd) {
 	if wd == "" {
 		wd = path
 	}
-	for _, p := range getFiles(wd) {
+
+	files := getFiles(wd)
+
+	fmt.Println("watching:", files)
+
+	for _, p := range files {
 		errs = append(errs, watcher.Add(p))
 	}
 
@@ -130,7 +136,11 @@ func watch(cmd *exec.Cmd) {
 
 func getFiles(path string) []string {
 	results := []string{}
-	folder, _ := os.Open(path)
+	folder, err := os.Open(path)
+	if err != nil {
+		log.Fatalf("could not open watch dir: %v", err)
+	}
+
 	defer folder.Close()
 
 	files, _ := folder.Readdir(-1)
