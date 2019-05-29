@@ -1,0 +1,10 @@
+github.com/fatih/color v1.4.1 h1:YJhD/SoQqn7ev9zwhIm7lHTAqsOAF2AN4xlAVZzNZnU=
+github.com/fatih/color v1.4.1/go.mod h1:Zm6kSWBoL9eyXnKyktHP6abPY2pDugNf5KwzbycvMj4=
+github.com/fsnotify/fsnotify v0.0.0-20170321125522-ff7bc41d4007 h1:k1yVtMgfDmC5wIGDXAEFVFNpwzU5esPgAa1ZooXStwY=
+github.com/fsnotify/fsnotify v0.0.0-20170321125522-ff7bc41d4007/go.mod h1:jwhsz4b93w/PPRr/qN1Yymfu8t87LnFCMoQvtojpjFo=
+github.com/mattn/go-colorable v0.0.0-20170304164543-acb9493f2794 h1:PdrBh4+bQSgCiqbAg0rc2YJ65Ic+mWqz4h8Zg3syPAY=
+github.com/mattn/go-colorable v0.0.0-20170304164543-acb9493f2794/go.mod h1:9vuHe8Xs5qXnSaW/c/ABM9alt+Vo+STaOChaDxuIBZU=
+github.com/mattn/go-isatty v0.0.0-20170216235908-dda3de49cbfc h1:pK7tzC30erKOTfEDCYGvPZQCkmM9X5iSmmAR5m9x3Yc=
+github.com/mattn/go-isatty v0.0.0-20170216235908-dda3de49cbfc/go.mod h1:M+lRXTBqGeGNdLjl/ufCoiOlB5xdOkqRJdNxMWT7Zi4=
+golang.org/x/sys v0.0.0-20170322234810-8fd966b47dbd h1:JY0hXVDqgct7/fqe7CkIIBT8Vm6oGUSyu/zmdOWz/3w=
+golang.org/x/sys v0.0.0-20170322234810-8fd966b47dbd/go.mod h1:STP8DvDyc/dI5b8T5hshtkjS+E42TnysNCUPdjciGhY=
