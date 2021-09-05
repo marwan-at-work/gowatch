@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"testing"
 )
@@ -11,7 +12,10 @@ func TestGetFiles(t *testing.T) {
 		t.Fatal("could not get cwd", err.Error())
 	}
 
-	files := getFiles(path)
+	files, err := getFiles(context.Background(), []string{path}, false, true)
+	if err != nil {
+		t.Fatal(err)
+	}
 	mainFile := path + "/main.go"
 	mainTest := path + "/main_test.go"
 

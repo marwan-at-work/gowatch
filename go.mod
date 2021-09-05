@@ -1,11 +1,18 @@
 module marwan.io/gowatch
 
-go 1.12
+go 1.17
 
 require (
-	github.com/fatih/color v1.4.1
-	github.com/fsnotify/fsnotify v0.0.0-20170321125522-ff7bc41d4007
-	github.com/mattn/go-colorable v0.0.0-20170304164543-acb9493f2794
-	github.com/mattn/go-isatty v0.0.0-20170216235908-dda3de49cbfc
-	golang.org/x/sys v0.0.0-20170322234810-8fd966b47dbd
+	github.com/fatih/color v1.12.0
+	github.com/fsnotify/fsnotify v1.5.1
+	github.com/urfave/cli/v2 v2.3.0
+)
+
+require (
+	github.com/cpuguy83/go-md2man/v2 v2.0.0-20190314233015-f79a8a8ca69d // indirect
+	github.com/mattn/go-colorable v0.1.8 // indirect
+	github.com/mattn/go-isatty v0.0.13 // indirect
+	github.com/russross/blackfriday/v2 v2.0.1 // indirect
+	github.com/shurcooL/sanitized_anchor_name v1.0.0 // indirect
+	golang.org/x/sys v0.0.0-20210903071746-97244b99971b // indirect
 )

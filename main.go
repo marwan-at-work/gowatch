@@ -1,165 +1,248 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"log"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strings"
 
 	"github.com/fatih/color"
 	"github.com/fsnotify/fsnotify"
+	"github.com/urfave/cli/v2"
 )
 
-var path string
-var args []string
-var buildTags string
-var includeVendor bool
-var wd string
-
 func main() {
-	args = parseArgs()
-
-	var err error
-	path, err = os.Getwd()
-	if err != nil {
-		log.Fatalf("could not get current working directory: %v\n", err)
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, os.Kill)
+	defer cancel()
+	app := &cli.App{
+		Name:  "gowatch",
+		Usage: "Automatically restart Go processes on file changes",
+		Flags: []cli.Flag{
+			&cli.StringSliceFlag{
+				Name:  "go-dir",
+				Usage: "Comma separated directories to watch Go files",
+			},
+			&cli.StringSliceFlag{
+				Name:  "nongo-dir",
+				Usage: "Comma separated directories to watch all files",
+			},
+			&cli.BoolFlag{
+				Name:    "include-vendor",
+				Aliases: []string{"vendor", "v"},
+				Usage:   "Also watch the vendor directory",
+			},
+			&cli.StringSliceFlag{
+				Name:  "build-flag",
+				Usage: "flags to send to the 'go build'",
+			},
+		},
+		Action: run,
 	}
-
-	watch(runCmd())
-}
-
-func parseArgs() []string {
-	args := []string{}
-	for _, s := range os.Args {
-		if strings.HasPrefix(s, "--build-tags=") {
-			buildTags = strings.Split(s, "=")[1]
-			continue
-		} else if strings.HasPrefix(s, "--include-vendor") {
-			includeVendor = true
-			continue
-		} else if strings.HasPrefix(s, "--watch-dir=") {
-			wd = strings.Split(s, "=")[1]
-			continue
-		}
-
-		args = append(args, s)
-	}
-
-	return args
-}
-
-func killCmd(cmd *exec.Cmd) error {
-	if err := cmd.Process.Kill(); err != nil {
-		return err
-	}
-
-	_, err := cmd.Process.Wait()
-	return err
-}
-
-func runCmd() *exec.Cmd {
-	_, dirName := filepath.Split(path)
-	buildArgs := []string{"build"}
-	if buildTags != "" {
-		buildArgs = append(buildArgs, "-tags", buildTags)
-	}
-
-	sub := exec.Command("go", buildArgs...)
-	sub.Dir = path
-	_, err := sub.Output()
-	if err != nil {
-		switch err.(type) {
-		case *exec.ExitError:
-			log.Fatal(string(err.(*exec.ExitError).Stderr))
-		default:
-			log.Fatal(err)
-		}
-	}
-
-	cmd := exec.Command("./" + dirName)
-	cmd.Dir = path
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	cmd.Args = append(cmd.Args, args[1:]...)
-	cmd.Env = os.Environ()
-
-	err = cmd.Start()
-	if err != nil {
+	err := app.RunContext(ctx, os.Args)
+	if err != nil && !errors.Is(err, context.Canceled) {
 		log.Fatal(err)
 	}
-
-	return cmd
 }
 
-func watch(cmd *exec.Cmd) {
+const configFile = "gowatch.json"
+
+func run(c *cli.Context) error {
+	if _, err := os.Stat(configFile); err == nil {
+		return runFile(c.Context)
+	}
+	return runCLI(c)
+}
+
+func runFile(ctx context.Context) error {
+	f, err := os.Open(configFile)
+	if err != nil {
+		return fmt.Errorf("configFile: %w", err)
+	}
+	defer f.Close()
+	var c config
+	err = json.NewDecoder(f).Decode(&c)
+	if err != nil {
+		return fmt.Errorf("json.Decode: %w", err)
+	}
+	return runWatcher(ctx, c.GoDirs, c.NonGoDirs, c.BuildFlags, c.RuntimeArgs, c.Vendor)
+}
+
+func runCLI(c *cli.Context) error {
+	goDirs := c.StringSlice("go-dir")
+	if len(goDirs) == 0 {
+		goDirs = []string{"."}
+	}
+	nonGoDirs := c.StringSlice("nongo-dir")
+	buildFlags := c.StringSlice("build-flag")
+	runtimeArgs := c.Args().Slice()
+	vendor := c.Bool("include-vendor")
+	return runWatcher(c.Context, goDirs, nonGoDirs, buildFlags, runtimeArgs, vendor)
+}
+
+type config struct {
+	GoDirs      []string
+	NonGoDirs   []string
+	BuildFlags  []string
+	RuntimeArgs []string
+	Vendor      bool
+}
+
+func runWatcher(ctx context.Context, goDirs, nonGoDirs, buildFlags, runtimeArgs []string, vendor bool) error {
+	for _, a := range buildFlags {
+		if isOutputFlag(a) {
+			return fmt.Errorf("-o build flag is disallowed because gowatch manages the go build for you")
+		}
+	}
+	files, err := getUniqueFiles(ctx, goDirs, nonGoDirs, vendor)
+	if err != nil {
+		return fmt.Errorf("getUniqueFiles: %w", err)
+	}
+	handler, err := getHandler(ctx, buildFlags, runtimeArgs)
+	if err != nil {
+		return fmt.Errorf("getHandler: %w", err)
+	}
+	return watch(ctx, files, handler)
+}
+
+func getHandler(ctx context.Context, buildFlags, runtimeArgs []string) (func() error, error) {
+	wd, err := os.Getwd()
+	if err != nil {
+		return nil, fmt.Errorf("os.Getwd: %w", err)
+	}
+	runCmd := func() (*exec.Cmd, error) {
+		args := append([]string{"build", "-o=__gowatch"}, buildFlags...)
+		cmd := exec.CommandContext(ctx, "go", args...)
+		cmd.Dir = wd // TODO: customizable
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		err := cmd.Run()
+		if err != nil {
+			return nil, fmt.Errorf("goBuild: %w", err)
+		}
+
+		cmd = exec.CommandContext(ctx, "./__gowatch", runtimeArgs...)
+		cmd.Dir = wd
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		cmd.Env = os.Environ()
+		err = cmd.Start()
+		return cmd, err
+	}
+	cmd, err := runCmd()
+	if err != nil {
+		return nil, fmt.Errorf("runCmd: %w", err)
+	}
+	return func() error {
+		err := cmd.Process.Kill()
+		if err != nil {
+			return fmt.Errorf("process.Kill: %w", err)
+		}
+		cmd, err = runCmd()
+		if err != nil {
+			return fmt.Errorf("runCmd: %w", err)
+		}
+		return nil
+	}, nil
+}
+
+func isOutputFlag(f string) bool {
+	return f == "-o" || f == "--o" || strings.HasPrefix(f, "-o=") || strings.HasPrefix(f, "--o=")
+}
+
+func watch(ctx context.Context, files []string, handler func() error) error {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
-		log.Fatal(err)
+		return fmt.Errorf("fsnotify.NewWatcher: %w", err)
 	}
 	defer watcher.Close()
-
+	for _, f := range files {
+		err = watcher.Add(f)
+		if err != nil {
+			return fmt.Errorf("watcher.Add(%q): %w", f, err)
+		}
+	}
+	errCh := make(chan error, 1)
 	go func() {
 		for event := range watcher.Events {
 			if event.Op&fsnotify.Write == fsnotify.Write {
 				log.Println(color.MagentaString("modified file: %v", event.Name))
-				if cmdErr := killCmd(cmd); cmdErr != nil {
-					log.Fatal(cmdErr)
+				err := handler()
+				if err != nil {
+					errCh <- err
 				}
-				cmd = runCmd()
 			}
 		}
 	}()
-
-	errs := []error{}
-	if wd == "" {
-		wd = path
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case err := <-errCh:
+		return err
 	}
-
-	files := getFiles(wd)
-	for _, p := range files {
-		errs = append(errs, watcher.Add(p))
-	}
-
-	for _, err = range errs {
-		if err != nil {
-			log.Fatal(err)
-		}
-	}
-
-	<-make(chan struct{})
 }
 
-func getFiles(path string) []string {
-	results := []string{}
-	folder, err := os.Open(path)
+func getUniqueFiles(ctx context.Context, goDirs, nonGoDirs []string, vendor bool) ([]string, error) {
+	files, err := getFiles(ctx, goDirs, vendor, true)
 	if err != nil {
-		log.Fatalf("could not open watch dir: %v", err)
+		return nil, fmt.Errorf("getGoFiles: %w", err)
 	}
+	nonGoFiles, err := getFiles(ctx, nonGoDirs, vendor, false)
+	if err != nil {
+		return nil, fmt.Errorf("getNonGoFiles: %w", err)
+	}
+	return uniq(files, nonGoFiles), nil
+}
 
-	defer folder.Close()
-
-	files, _ := folder.Readdir(-1)
-	for _, file := range files {
-		fileName := file.Name()
-		newPath := path + "/" + fileName
-
-		isValidDir := file.IsDir() && !strings.HasPrefix(fileName, ".")
-
-		if !includeVendor {
-			isValidDir = isValidDir && fileName != "vendor"
-		}
-
-		isValidFile := !file.IsDir() &&
-			strings.HasSuffix(fileName, ".go") &&
-			!strings.HasSuffix(fileName, "_test.go")
-
-		if isValidDir {
-			results = append(results, getFiles(newPath)...)
-		} else if isValidFile {
-			results = append(results, newPath)
+func uniq(slices ...[]string) []string {
+	mp := map[string]struct{}{}
+	final := []string{}
+	for _, slc := range slices {
+		for _, el := range slc {
+			if _, ok := mp[el]; ok {
+				continue
+			}
+			mp[el] = struct{}{}
+			final = append(final, el)
 		}
 	}
+	return final
+}
 
-	return results
+func getFiles(ctx context.Context, goDirs []string, vendor, goFiles bool) ([]string, error) {
+	files := []string{}
+	for _, dir := range goDirs {
+		if !vendor && dir == "vendor" {
+			continue
+		}
+		dirFiles, err := os.ReadDir(dir)
+		if err != nil {
+			return nil, fmt.Errorf("os.ReadDir(%q): %w", dir, err)
+		}
+		for _, df := range dirFiles {
+			entryName := df.Name()
+			if entryName == ".git" {
+				continue
+			}
+			if df.IsDir() {
+				innerDir := filepath.Join(dir, entryName)
+				dirFiles, err := getFiles(ctx, []string{innerDir}, vendor, goFiles)
+				if err != nil {
+					return nil, fmt.Errorf("getGoFiles(%q): %w", entryName, err)
+				}
+				files = append(files, dirFiles...)
+				continue
+			}
+			if goFiles && filepath.Ext(entryName) != ".go" {
+				continue
+			}
+			files = append(files, filepath.Join(dir, df.Name()))
+		}
+	}
+	return files, nil
 }
