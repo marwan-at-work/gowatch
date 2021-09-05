@@ -41,6 +41,11 @@ func main() {
 				Name:  "build-flag",
 				Usage: "flags to send to the 'go build'",
 			},
+			&cli.BoolFlag{
+				Name:    "print-files",
+				Aliases: []string{"p"},
+				Usage:   "print all watched files",
+			},
 		},
 		Action: run,
 	}
@@ -70,19 +75,19 @@ func runFile(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("json.Decode: %w", err)
 	}
-	return runWatcher(ctx, c.GoDirs, c.NonGoDirs, c.BuildFlags, c.RuntimeArgs, c.Vendor)
+	return runWatcher(ctx, c)
 }
 
 func runCLI(c *cli.Context) error {
-	goDirs := c.StringSlice("go-dir")
-	if len(goDirs) == 0 {
-		goDirs = []string{"."}
+	cfg := config{
+		GoDirs:      c.StringSlice("go-dir"),
+		NonGoDirs:   c.StringSlice("nongo-dir"),
+		BuildFlags:  c.StringSlice("build-flag"),
+		RuntimeArgs: c.Args().Slice(),
+		Vendor:      c.Bool("include-vendor"),
+		PrintFiles:  c.Bool("print-files"),
 	}
-	nonGoDirs := c.StringSlice("nongo-dir")
-	buildFlags := c.StringSlice("build-flag")
-	runtimeArgs := c.Args().Slice()
-	vendor := c.Bool("include-vendor")
-	return runWatcher(c.Context, goDirs, nonGoDirs, buildFlags, runtimeArgs, vendor)
+	return runWatcher(c.Context, cfg)
 }
 
 type config struct {
@@ -91,19 +96,28 @@ type config struct {
 	BuildFlags  []string
 	RuntimeArgs []string
 	Vendor      bool
+	PrintFiles  bool
 }
 
-func runWatcher(ctx context.Context, goDirs, nonGoDirs, buildFlags, runtimeArgs []string, vendor bool) error {
-	for _, a := range buildFlags {
+func runWatcher(ctx context.Context, c config) error {
+	if len(c.GoDirs) == 0 {
+		c.GoDirs = []string{"."}
+	}
+	for _, a := range c.BuildFlags {
 		if isOutputFlag(a) {
 			return fmt.Errorf("-o build flag is disallowed because gowatch manages the go build for you")
 		}
 	}
-	files, err := getUniqueFiles(ctx, goDirs, nonGoDirs, vendor)
+	files, err := getUniqueFiles(ctx, c.GoDirs, c.NonGoDirs, c.Vendor)
 	if err != nil {
 		return fmt.Errorf("getUniqueFiles: %w", err)
 	}
-	handler, err := getHandler(ctx, buildFlags, runtimeArgs)
+	if c.PrintFiles {
+		for _, f := range files {
+			fmt.Println(f)
+		}
+	}
+	handler, err := getHandler(ctx, c.BuildFlags, c.RuntimeArgs)
 	if err != nil {
 		return fmt.Errorf("getHandler: %w", err)
 	}
