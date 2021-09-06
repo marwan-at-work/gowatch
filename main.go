@@ -189,6 +189,7 @@ func watch(ctx context.Context, files []string, handler func() error) error {
 				err := handler()
 				if err != nil {
 					errCh <- err
+					return
 				}
 			}
 		}
