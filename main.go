@@ -47,6 +47,22 @@ func main() {
 				Usage:   "print all watched files",
 			},
 		},
+		Commands: []*cli.Command{
+			{
+				Name:  "init",
+				Usage: "creates a gowatch.json file in the current working directory",
+				Action: func(c *cli.Context) error {
+					f, err := os.Create("gowatch.json")
+					if err != nil {
+						return err
+					}
+					defer f.Close()
+					enc := json.NewEncoder(f)
+					enc.SetIndent("", "\t")
+					return enc.Encode(config{})
+				},
+			},
+		},
 		Action: run,
 	}
 	err := app.RunContext(ctx, os.Args)
