@@ -95,11 +95,11 @@ func runFile(ctx context.Context) error {
 
 func runCLI(c *cli.Context) error {
 	cfg := config{
-		GoPaths:     c.StringSlice("go-dir"),
-		NonGoPaths:  c.StringSlice("nongo-dir"),
+		GoPaths:     c.StringSlice("go"),
+		NonGoPaths:  c.StringSlice("nongo"),
 		BuildFlags:  c.StringSlice("build-flag"),
 		RuntimeArgs: c.Args().Slice(),
-		Vendor:      c.Bool("include-vendor"),
+		Vendor:      c.Bool("vendor"),
 		PrintFiles:  c.Bool("print-files"),
 	}
 	return runWatcher(c.Context, cfg)
