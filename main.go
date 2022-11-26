@@ -25,20 +25,19 @@ func main() {
 		Usage: "Automatically restart Go processes on file changes",
 		Flags: []cli.Flag{
 			&cli.StringSliceFlag{
-				Name:  "go-dir",
-				Usage: "Comma separated directories to watch Go files",
+				Name:  "go",
+				Usage: "Comma separated directories or files to watch Go files",
 			},
 			&cli.StringSliceFlag{
-				Name:  "nongo-dir",
-				Usage: "Comma separated directories to watch all files",
+				Name:  "nongo",
+				Usage: "Comma separated directories or files to watch all files",
 			},
 			&cli.BoolFlag{
-				Name:    "include-vendor",
-				Aliases: []string{"vendor", "v"},
-				Usage:   "Also watch the vendor directory",
+				Name:  "vendor",
+				Usage: "Also watch the vendor directory",
 			},
 			&cli.StringSliceFlag{
-				Name:  "build-flag",
+				Name:  "build-flags",
 				Usage: "flags to send to the 'go build'",
 			},
 			&cli.BoolFlag{
@@ -51,7 +50,7 @@ func main() {
 			{
 				Name:  "init",
 				Usage: "creates a gowatch.json file in the current working directory",
-				Action: func(c *cli.Context) error {
+				Action: func(*cli.Context) error {
 					f, err := os.Create("gowatch.json")
 					if err != nil {
 						return err
@@ -96,8 +95,8 @@ func runFile(ctx context.Context) error {
 
 func runCLI(c *cli.Context) error {
 	cfg := config{
-		GoDirs:      c.StringSlice("go-dir"),
-		NonGoDirs:   c.StringSlice("nongo-dir"),
+		GoPaths:     c.StringSlice("go-dir"),
+		NonGoPaths:  c.StringSlice("nongo-dir"),
 		BuildFlags:  c.StringSlice("build-flag"),
 		RuntimeArgs: c.Args().Slice(),
 		Vendor:      c.Bool("include-vendor"),
@@ -107,8 +106,8 @@ func runCLI(c *cli.Context) error {
 }
 
 type config struct {
-	GoDirs      []string
-	NonGoDirs   []string
+	GoPaths     []string
+	NonGoPaths  []string
 	BuildFlags  []string
 	RuntimeArgs []string
 	Vendor      bool
@@ -116,15 +115,15 @@ type config struct {
 }
 
 func runWatcher(ctx context.Context, c config) error {
-	if len(c.GoDirs) == 0 {
-		c.GoDirs = []string{"."}
+	if len(c.GoPaths) == 0 {
+		c.GoPaths = []string{"."}
 	}
 	for _, a := range c.BuildFlags {
 		if isOutputFlag(a) {
 			return fmt.Errorf("-o build flag is disallowed because gowatch manages the go build for you")
 		}
 	}
-	files, err := getUniqueFiles(ctx, c.GoDirs, c.NonGoDirs, c.Vendor)
+	files, err := getUniqueFiles(ctx, c.GoPaths, c.NonGoPaths, c.Vendor)
 	if err != nil {
 		return fmt.Errorf("getUniqueFiles: %w", err)
 	}
@@ -169,7 +168,8 @@ func getHandler(ctx context.Context, buildFlags, runtimeArgs []string) (func() e
 		return nil, fmt.Errorf("runCmd: %w", err)
 	}
 	return func() error {
-		err := cmd.Process.Kill()
+		err := cmd.Process.Signal(os.Interrupt)
+		// TODO: call cmd.Process.Kill() if need be.
 		if err != nil {
 			return fmt.Errorf("process.Kill: %w", err)
 		}
@@ -245,15 +245,26 @@ func uniq(slices ...[]string) []string {
 	return final
 }
 
-func getFiles(ctx context.Context, goDirs []string, vendor, goFiles bool) ([]string, error) {
+func getFiles(ctx context.Context, paths []string, vendor, goFiles bool) ([]string, error) {
 	files := []string{}
-	for _, dir := range goDirs {
-		if !vendor && dir == "vendor" {
+	for _, pathName := range paths {
+		if !vendor && pathName == "vendor" {
 			continue
 		}
-		dirFiles, err := os.ReadDir(dir)
+		fi, err := os.Stat(pathName)
 		if err != nil {
-			return nil, fmt.Errorf("os.ReadDir(%q): %w", dir, err)
+			return nil, fmt.Errorf("error stating %q: %w", pathName, err)
+		}
+		if !fi.IsDir() {
+			if goFiles && filepath.Ext(pathName) != ".go" {
+				continue
+			}
+			files = append(files, pathName)
+			continue
+		}
+		dirFiles, err := os.ReadDir(pathName)
+		if err != nil {
+			return nil, fmt.Errorf("os.ReadDir(%q): %w", pathName, err)
 		}
 		for _, df := range dirFiles {
 			entryName := df.Name()
@@ -261,7 +272,7 @@ func getFiles(ctx context.Context, goDirs []string, vendor, goFiles bool) ([]str
 				continue
 			}
 			if df.IsDir() {
-				innerDir := filepath.Join(dir, entryName)
+				innerDir := filepath.Join(pathName, entryName)
 				dirFiles, err := getFiles(ctx, []string{innerDir}, vendor, goFiles)
 				if err != nil {
 					return nil, fmt.Errorf("getGoFiles(%q): %w", entryName, err)
@@ -272,7 +283,7 @@ func getFiles(ctx context.Context, goDirs []string, vendor, goFiles bool) ([]str
 			if goFiles && filepath.Ext(entryName) != ".go" {
 				continue
 			}
-			files = append(files, filepath.Join(dir, df.Name()))
+			files = append(files, filepath.Join(pathName, df.Name()))
 		}
 	}
 	return files, nil
