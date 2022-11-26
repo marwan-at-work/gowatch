@@ -1,5 +1,6 @@
-# gowatch
-A simple `.go` file watcher that will stop & restart your `main()` function on file changes.
+<img src="https://user-images.githubusercontent.com/16294261/204098353-e8042b8c-3f3c-43e4-9974-86274abb634b.png" width="400" />
+
+A simple Go file watcher that will stop & restart your `main()` function on file changes.
 
 ## Motivation
 
