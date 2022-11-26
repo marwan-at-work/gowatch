@@ -7,7 +7,7 @@ I just want to stop my server, and run it again every time I save a file.
 
 ## installation
 
-`go get github.com/marwan-at-work/gowatch`
+`go install marwan.io/gowatch@latest`
 
 ## Usage
 from your main app directory, run `gowatch`
