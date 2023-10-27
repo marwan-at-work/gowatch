@@ -2,6 +2,7 @@ package watcher
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -40,17 +41,18 @@ func Run(ctx context.Context, c Config) error {
 			fmt.Println(f)
 		}
 	}
-	handler, err := getHandler(ctx, c.BuildFlags, c.RuntimeArgs)
+	handler, cleanup, err := getHandler(ctx, c.BuildFlags, c.RuntimeArgs)
 	if err != nil {
 		return fmt.Errorf("getHandler: %w", err)
 	}
+	defer cleanup()
 	return watch(ctx, files, handler)
 }
 
-func getHandler(ctx context.Context, buildFlags, runtimeArgs []string) (func() error, error) {
+func getHandler(ctx context.Context, buildFlags, runtimeArgs []string) (handler func() error, cleanup func() error, err error) {
 	wd, err := os.Getwd()
 	if err != nil {
-		return nil, fmt.Errorf("os.Getwd: %w", err)
+		return nil, nil, fmt.Errorf("os.Getwd: %w", err)
 	}
 	runCmd := func() (*exec.Cmd, error) {
 		args := append([]string{"build", "-o=__gowatch"}, buildFlags...)
@@ -71,22 +73,34 @@ func getHandler(ctx context.Context, buildFlags, runtimeArgs []string) (func() e
 		err = cmd.Start()
 		return cmd, err
 	}
-	cmd, err := runCmd()
-	if err != nil {
-		return nil, fmt.Errorf("runCmd: %w", err)
-	}
-	return func() error {
-		err := cmd.Process.Signal(os.Interrupt)
-		// TODO: call cmd.Process.Kill() if need be.
-		if err != nil {
-			return fmt.Errorf("process.Kill: %w", err)
+
+	var cmd *exec.Cmd
+	handler = func() error {
+		if cmd != nil {
+			err = cmd.Process.Signal(os.Interrupt)
+			// TODO: call cmd.Process.Kill() if need be.
+			if err != nil {
+				return fmt.Errorf("process.Interrupt: %w", err)
+			}
+			err = cmd.Wait()
+			var exitErr *exec.ExitError
+			if !errors.As(err, &exitErr) {
+				log.Printf("error exiting from previous program: %v", err)
+			}
 		}
 		cmd, err = runCmd()
 		if err != nil {
 			return fmt.Errorf("runCmd: %w", err)
 		}
 		return nil
-	}, nil
+	}
+	cleanup = func() error {
+		if cmd == nil {
+			return nil
+		}
+		return cmd.Wait()
+	}
+	return handler, cleanup, nil
 }
 
 func isOutputFlag(f string) bool {
@@ -105,25 +119,24 @@ func watch(ctx context.Context, files []string, handler func() error) error {
 			return fmt.Errorf("watcher.Add(%q): %w", f, err)
 		}
 	}
-	errCh := make(chan error, 1)
 	go func() {
+		if err := handler(); err != nil {
+			log.Printf("error building Go program: %v", err)
+		}
 		for event := range watcher.Events {
+			if ctx.Err() != nil {
+				return
+			}
 			if event.Op&fsnotify.Write == fsnotify.Write {
 				log.Println(color.MagentaString("modified file: %v", event.Name))
-				err := handler()
-				if err != nil {
-					errCh <- err
-					return
+				if err := handler(); err != nil {
+					log.Printf("error re-building Go program: %v", err)
 				}
 			}
 		}
 	}()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case err := <-errCh:
-		return err
-	}
+	<-ctx.Done()
+	return ctx.Err()
 }
 
 func getUniqueFiles(ctx context.Context, goDirs, nonGoDirs []string, vendor bool) ([]string, error) {
