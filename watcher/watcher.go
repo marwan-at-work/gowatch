@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
@@ -15,12 +16,13 @@ import (
 )
 
 type Config struct {
-	GoPaths     []string
-	NonGoPaths  []string
-	BuildFlags  []string
-	RuntimeArgs []string
-	Vendor      bool
-	PrintFiles  bool
+	Stdout, Stderr io.Writer
+	GoPaths        []string
+	NonGoPaths     []string
+	BuildFlags     []string
+	RuntimeArgs    []string
+	Vendor         bool
+	PrintFiles     bool
 }
 
 func Run(ctx context.Context, c Config) error {
@@ -41,7 +43,7 @@ func Run(ctx context.Context, c Config) error {
 			fmt.Println(f)
 		}
 	}
-	handler, cleanup, err := getHandler(ctx, c.BuildFlags, c.RuntimeArgs)
+	handler, cleanup, err := getHandler(ctx, c.BuildFlags, c.RuntimeArgs, c.Stdout, c.Stderr)
 	if err != nil {
 		return fmt.Errorf("getHandler: %w", err)
 	}
@@ -49,10 +51,16 @@ func Run(ctx context.Context, c Config) error {
 	return watch(ctx, files, handler)
 }
 
-func getHandler(ctx context.Context, buildFlags, runtimeArgs []string) (handler func() error, cleanup func() error, err error) {
+func getHandler(ctx context.Context, buildFlags, runtimeArgs []string, stdout, stderr io.Writer) (handler func() error, cleanup func() error, err error) {
 	wd, err := os.Getwd()
 	if err != nil {
 		return nil, nil, fmt.Errorf("os.Getwd: %w", err)
+	}
+	if stdout == nil {
+		stdout = os.Stdout
+	}
+	if stderr == nil {
+		stderr = os.Stderr
 	}
 	runCmd := func() (*exec.Cmd, error) {
 		args := append([]string{"build", "-o=__gowatch"}, buildFlags...)
@@ -67,8 +75,8 @@ func getHandler(ctx context.Context, buildFlags, runtimeArgs []string) (handler 
 
 		cmd = exec.CommandContext(ctx, "./__gowatch", runtimeArgs...)
 		cmd.Dir = wd
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
+		cmd.Stdout = stdout
+		cmd.Stderr = stderr
 		cmd.Env = os.Environ()
 		err = cmd.Start()
 		return cmd, err
@@ -84,7 +92,7 @@ func getHandler(ctx context.Context, buildFlags, runtimeArgs []string) (handler 
 			}
 			err = cmd.Wait()
 			var exitErr *exec.ExitError
-			if !errors.As(err, &exitErr) {
+			if err != nil && !errors.As(err, &exitErr) {
 				log.Printf("error exiting from previous program: %v", err)
 			}
 		}
