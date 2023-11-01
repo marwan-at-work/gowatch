@@ -16,18 +16,25 @@ import (
 )
 
 type Config struct {
-	Stdout, Stderr io.Writer
-	GoPaths        []string
-	NonGoPaths     []string
-	BuildFlags     []string
-	RuntimeArgs    []string
-	Vendor         bool
-	PrintFiles     bool
+	GoPaths     []string
+	NonGoPaths  []string
+	BuildFlags  []string
+	RuntimeArgs []string
+	Vendor      bool
+	PrintFiles  bool
+
+	// Non serialized fields
+	Stdout, Stderr io.Writer                `json:"-"`
+	OnFileChange   func(file string)        `json:"-"`
+	Logf           func(s string, a ...any) `json:"-"`
 }
 
 func Run(ctx context.Context, c Config) error {
 	if len(c.GoPaths) == 0 {
 		c.GoPaths = []string{"."}
+	}
+	if c.Logf == nil {
+		c.Logf = log.Printf
 	}
 	for _, a := range c.BuildFlags {
 		if isOutputFlag(a) {
@@ -43,15 +50,20 @@ func Run(ctx context.Context, c Config) error {
 			fmt.Println(f)
 		}
 	}
-	handler, cleanup, err := getHandler(ctx, c.BuildFlags, c.RuntimeArgs, c.Stdout, c.Stderr)
+	handler, cleanup, err := getHandler(ctx, c)
 	if err != nil {
 		return fmt.Errorf("getHandler: %w", err)
 	}
 	defer cleanup()
-	return watch(ctx, files, handler)
+	return watch(ctx, files, handler, c.OnFileChange, c.Logf)
 }
 
-func getHandler(ctx context.Context, buildFlags, runtimeArgs []string, stdout, stderr io.Writer) (handler func() error, cleanup func() error, err error) {
+func getHandler(ctx context.Context, c Config) (handler func() error, cleanup func() error, err error) {
+	buildFlags := c.BuildFlags
+	runtimeArgs := c.RuntimeArgs
+	stdout, stderr := c.Stdout, c.Stderr
+	logf := c.Logf
+
 	wd, err := os.Getwd()
 	if err != nil {
 		return nil, nil, fmt.Errorf("os.Getwd: %w", err)
@@ -93,7 +105,7 @@ func getHandler(ctx context.Context, buildFlags, runtimeArgs []string, stdout, s
 			err = cmd.Wait()
 			var exitErr *exec.ExitError
 			if err != nil && !errors.As(err, &exitErr) {
-				log.Printf("error exiting from previous program: %v", err)
+				logf("error exiting from previous program: %v", err)
 			}
 		}
 		cmd, err = runCmd()
@@ -115,7 +127,13 @@ func isOutputFlag(f string) bool {
 	return f == "-o" || f == "--o" || strings.HasPrefix(f, "-o=") || strings.HasPrefix(f, "--o=")
 }
 
-func watch(ctx context.Context, files []string, handler func() error) error {
+func watch(
+	ctx context.Context,
+	files []string,
+	handler func() error,
+	onFileChange func(string),
+	logf func(s string, a ...any),
+) error {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
 		return fmt.Errorf("fsnotify.NewWatcher: %w", err)
@@ -129,16 +147,19 @@ func watch(ctx context.Context, files []string, handler func() error) error {
 	}
 	go func() {
 		if err := handler(); err != nil {
-			log.Printf("error building Go program: %v", err)
+			logf("error building Go program: %v", err)
 		}
 		for event := range watcher.Events {
 			if ctx.Err() != nil {
 				return
 			}
 			if event.Op&fsnotify.Write == fsnotify.Write {
-				log.Println(color.MagentaString("modified file: %v", event.Name))
+				if onFileChange != nil {
+					onFileChange(event.Name)
+				}
+				logf(color.MagentaString("modified file: %v", event.Name))
 				if err := handler(); err != nil {
-					log.Printf("error re-building Go program: %v", err)
+					logf("error re-building Go program: %v", err)
 				}
 			}
 		}
