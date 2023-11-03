@@ -34,9 +34,6 @@ func Run(ctx context.Context, c Config) error {
 	if len(c.GoPaths) == 0 {
 		c.GoPaths = []string{"."}
 	}
-	if c.Logf == nil {
-		c.Logf = log.Printf
-	}
 	for _, a := range c.BuildFlags {
 		if isOutputFlag(a) {
 			return fmt.Errorf("-o build flag is disallowed because gowatch manages the go build for you")
@@ -47,123 +44,55 @@ func Run(ctx context.Context, c Config) error {
 		return fmt.Errorf("getUniqueFiles: %w", err)
 	}
 	if c.PrintFiles {
-		for _, f := range files {
-			fmt.Println(f)
-		}
+		fmt.Println(strings.Join(files, "\n"))
+		return nil
 	}
-	handler, cleanup, err := getHandler(ctx, c)
-	if err != nil {
-		return fmt.Errorf("getHandler: %w", err)
-	}
-	defer cleanup()
-	return watch(ctx, files, handler, c.OnFileChange, c.Logf)
-}
-
-func getHandler(ctx context.Context, c Config) (handler func() error, cleanup func() error, err error) {
-	buildFlags := c.BuildFlags
-	runtimeArgs := c.RuntimeArgs
-	stdout, stderr := c.Stdout, c.Stderr
-	logf := c.Logf
 
 	wd, err := os.Getwd()
 	if err != nil {
-		return nil, nil, fmt.Errorf("os.Getwd: %w", err)
+		return fmt.Errorf("os.Getwd: %w", err)
 	}
-	if stdout == nil {
-		stdout = os.Stdout
-	}
-	if stderr == nil {
-		stderr = os.Stderr
-	}
+
 	tmpdir, err := os.MkdirTemp("", "gowatch")
 	if err != nil {
-		return nil, nil, fmt.Errorf("os.MkdirTemp: %w", err)
+		return fmt.Errorf("os.MkdirTemp: %w", err)
 	}
 	binpath := filepath.Join(tmpdir, "__gowatch")
-	waitCh := make(chan error, 1)
-	var interrupt bool
-	runCmd := func() (*exec.Cmd, error) {
-		interrupt = false
-		args := append([]string{"build", "-o=" + binpath}, buildFlags...)
-		cmd := exec.CommandContext(ctx, "go", args...)
-		cmd.Dir = wd // TODO: customizable
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		err := cmd.Run()
-		if err != nil {
-			return nil, fmt.Errorf("goBuild: %w", err)
-		}
+	defer os.RemoveAll(tmpdir)
 
-		cmd = exec.CommandContext(ctx, binpath, runtimeArgs...)
-		cmd.Dir = wd
-		cmd.Stdout = stdout
-		cmd.Stderr = stderr
-		cmd.Env = os.Environ()
-		err = cmd.Start()
-		if err != nil {
-			return nil, err
-		}
-		go func() {
-			err := cmd.Wait()
-			waitCh <- err
-			if !interrupt && c.OnProcesExit != nil {
-				c.OnProcesExit(err)
-			}
-		}()
-		return cmd, nil
+	if c.Logf == nil {
+		c.Logf = log.Printf
+	}
+	if c.Stdout == nil {
+		c.Stdout = os.Stdout
+	}
+	if c.Stderr == nil {
+		c.Stderr = os.Stderr
+	}
+	if c.OnFileChange == nil {
+		c.OnFileChange = func(string) {}
+	}
+	if c.OnProcesExit == nil {
+		c.OnProcesExit = func(error) {}
 	}
 
-	var cmd *exec.Cmd
-	handler = func() error {
-		if cmd != nil {
-			var err error
-			stillWaiting := true
-			select {
-			case err = <-waitCh:
-				stillWaiting = false
-			default:
-			}
-			if stillWaiting {
-				interrupt = true
-				err = cmd.Process.Signal(os.Interrupt)
-				// TODO: call cmd.Process.Kill() if need be.
-				if err != nil {
-					return fmt.Errorf("process.Interrupt: %w", err)
-				}
-				err = <-waitCh
-			}
-			var exitErr *exec.ExitError
-			if err != nil && !errors.As(err, &exitErr) {
-				logf("error exiting from previous program: %v", err)
-			}
-		}
-		cmd, err = runCmd()
-		if err != nil {
-			return fmt.Errorf("runCmd: %w", err)
-		}
-		return nil
-	}
-	cleanup = func() error {
-		defer os.RemoveAll(tmpdir)
-		if cmd == nil {
-			return nil
-		}
-		return <-waitCh
-	}
-	return handler, cleanup, nil
+	return (&watcher{
+		c:        c,
+		binpath:  binpath,
+		wd:       wd,
+		exitChan: make(chan error, 1),
+	}).watch(ctx, files)
 }
 
-func isOutputFlag(f string) bool {
-	return f == "-o" || f == "--o" || strings.HasPrefix(f, "-o=") || strings.HasPrefix(f, "--o=")
+type watcher struct {
+	c        Config
+	binpath  string
+	wd       string
+	cmd      *exec.Cmd
+	exitChan chan error
 }
 
-func watch(
-	ctx context.Context,
-	files []string,
-	handler func() error,
-	onFileChange func(string),
-	logf func(s string, a ...any),
-) error {
+func (w *watcher) watch(ctx context.Context, files []string) error {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
 		return fmt.Errorf("fsnotify.NewWatcher: %w", err)
@@ -175,27 +104,105 @@ func watch(
 			return fmt.Errorf("watcher.Add(%q): %w", f, err)
 		}
 	}
-	go func() {
-		if err := handler(); err != nil {
-			logf("error building Go program: %v", err)
-		}
-		for event := range watcher.Events {
-			if ctx.Err() != nil {
-				return
-			}
+
+	err = w.start(ctx)
+	if err != nil {
+		return fmt.Errorf("error starting binary: %w", err)
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			// TODO: wrap dat shit up? MAYBE HAPPENS ON DEFURR?
+			return ctx.Err()
+		case event := <-watcher.Events:
 			if event.Op&fsnotify.Write == fsnotify.Write {
-				if onFileChange != nil {
-					onFileChange(event.Name)
-				}
-				logf(color.MagentaString("modified file: %v", event.Name))
-				if err := handler(); err != nil {
-					logf("error re-building Go program: %v", err)
+				w.c.OnFileChange(event.Name)
+				w.c.Logf(color.MagentaString("modified file: %v", event.Name))
+				err = w.restart(ctx)
+				if err != nil {
+					return fmt.Errorf("watcher.restart: %w", err)
 				}
 			}
+		case err := <-watcher.Errors:
+			w.c.Logf("watcher error: %v", err)
+		case err := <-w.exitChan:
+			w.c.OnProcesExit(err)
+			w.c.Logf("process exited unexpectedly: %v", err)
 		}
+	}
+}
+
+func (w *watcher) start(ctx context.Context) error {
+	if err := w.build(ctx); err != nil {
+		return err
+	}
+	return w.startBinary(ctx)
+}
+
+func (w *watcher) restart(ctx context.Context) error {
+	if err := w.stop(ctx); err != nil {
+		return err
+	}
+	if err := w.start(ctx); err != nil {
+		w.c.Logf("error starting binary: %w", err)
+	}
+	return nil
+}
+
+func (w *watcher) stop(ctx context.Context) error {
+	if w.cmd == nil {
+		return nil
+	}
+	// TODO: call cmd.Process.Kill() if need be and/or timeout.
+	err := w.cmd.Process.Signal(os.Interrupt)
+	if err != nil {
+		return fmt.Errorf("process.Interrupt: %w", err)
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case err = <-w.exitChan:
+		var exitErr *exec.ExitError
+		if err != nil && !errors.As(err, &exitErr) {
+			return fmt.Errorf("process.Wait: %w", err)
+		}
+	}
+	return nil
+}
+
+func (w *watcher) build(ctx context.Context) error {
+	args := append([]string{"build", "-o=" + w.binpath}, w.c.BuildFlags...)
+	cmd := exec.CommandContext(ctx, "go", args...)
+	cmd.Dir = w.wd // TODO: customizable
+	cmd.Stdout = w.c.Stdout
+	cmd.Stderr = w.c.Stderr
+	err := cmd.Run()
+	if err != nil {
+		return fmt.Errorf("goBuild: %w", err)
+	}
+	return nil
+}
+
+func (w *watcher) startBinary(ctx context.Context) error {
+	cmd := exec.CommandContext(ctx, w.binpath, w.c.RuntimeArgs...)
+	cmd.Dir = w.wd
+	cmd.Stdout = w.c.Stdout
+	cmd.Stderr = w.c.Stderr
+	cmd.Env = os.Environ()
+	err := cmd.Start()
+	if err != nil {
+		return fmt.Errorf("cmd.Start: %w", err)
+	}
+	w.cmd = cmd
+	go func() {
+		err := cmd.Wait()
+		w.exitChan <- err
 	}()
-	<-ctx.Done()
-	return ctx.Err()
+	return nil
+}
+
+func isOutputFlag(f string) bool {
+	return f == "-o" || f == "--o" || strings.HasPrefix(f, "-o=") || strings.HasPrefix(f, "--o=")
 }
 
 func getUniqueFiles(ctx context.Context, goDirs, nonGoDirs []string, vendor bool) ([]string, error) {
