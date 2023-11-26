@@ -13,44 +13,61 @@ import (
 
 	"github.com/fatih/color"
 	"github.com/fsnotify/fsnotify"
+	"golang.org/x/tools/go/packages"
 )
 
 type Config struct {
-	GoPaths     []string
-	NonGoPaths  []string
-	BuildFlags  []string
-	RuntimeArgs []string
-	Vendor      bool
-	PrintFiles  bool
+	Dir             string
+	AdditionalFiles []string
+	BuildFlags      []string
+	RuntimeArgs     []string
+	Vendor          bool
+	PrintFiles      bool
+	Env             []string
 
 	// Non serialized fields
 	Stdout, Stderr io.Writer                `json:"-"`
 	OnFileChange   func(file string)        `json:"-"`
-	OnProcesExit   func(err error)          `json:"-"`
+	OnProcessStart func()                   `json:"-"`
+	OnProcessExit  func(err error)          `json:"-"`
 	Logf           func(s string, a ...any) `json:"-"`
 }
 
 func Run(ctx context.Context, c Config) error {
-	if len(c.GoPaths) == 0 {
-		c.GoPaths = []string{"."}
-	}
 	for _, a := range c.BuildFlags {
 		if isOutputFlag(a) {
 			return fmt.Errorf("-o build flag is disallowed because gowatch manages the go build for you")
 		}
 	}
-	files, err := getUniqueFiles(ctx, c.GoPaths, c.NonGoPaths, c.Vendor)
-	if err != nil {
-		return fmt.Errorf("getUniqueFiles: %w", err)
-	}
-	if c.PrintFiles {
-		fmt.Println(strings.Join(files, "\n"))
-		return nil
+
+	s := set{}
+	if len(c.AdditionalFiles) > 0 {
+		for _, pattern := range c.AdditionalFiles {
+			matches, err := filepath.Glob(pattern)
+			if err != nil {
+				return err
+			}
+			s.add(matches...)
+		}
 	}
 
-	wd, err := os.Getwd()
+	var err error
+	if c.Dir == "" {
+		c.Dir, err = os.Getwd()
+		if err != nil {
+			return fmt.Errorf("os.Getwd: %w", err)
+		}
+	}
+
+	goFiles, err := listGoFiles(c.Dir)
 	if err != nil {
-		return fmt.Errorf("os.Getwd: %w", err)
+		return fmt.Errorf("error listing go files: %w", err)
+	}
+	s.add(goFiles...)
+
+	if c.PrintFiles {
+		fmt.Println(strings.Join(s.slice(), "\n"))
+		return nil
 	}
 
 	tmpdir, err := os.MkdirTemp("", "gowatch")
@@ -72,24 +89,26 @@ func Run(ctx context.Context, c Config) error {
 	if c.OnFileChange == nil {
 		c.OnFileChange = func(string) {}
 	}
-	if c.OnProcesExit == nil {
-		c.OnProcesExit = func(error) {}
+	if c.OnProcessStart == nil {
+		c.OnProcessStart = func() {}
+	}
+	if c.OnProcessExit == nil {
+		c.OnProcessExit = func(error) {}
 	}
 
 	return (&watcher{
 		c:        c,
 		binpath:  binpath,
-		wd:       wd,
 		exitChan: make(chan error, 1),
-	}).watch(ctx, files)
+	}).watch(ctx, s.slice())
 }
 
 type watcher struct {
 	c        Config
 	binpath  string
-	wd       string
 	cmd      *exec.Cmd
 	exitChan chan error
+	env      []string
 }
 
 func (w *watcher) watch(ctx context.Context, files []string) error {
@@ -107,26 +126,30 @@ func (w *watcher) watch(ctx context.Context, files []string) error {
 
 	err = w.start(ctx)
 	if err != nil {
-		return fmt.Errorf("error starting binary: %w", err)
+		w.c.OnProcessExit(err)
+		w.c.Logf("error starting binary: %v", err)
 	}
+
 	for {
 		select {
 		case <-ctx.Done():
-			// TODO: wrap dat shit up? MAYBE HAPPENS ON DEFURR?
-			return ctx.Err()
+			if err == nil {
+				err = errors.Join(<-w.exitChan, ctx.Err())
+			}
+			return err
 		case event := <-watcher.Events:
 			if event.Op&fsnotify.Write == fsnotify.Write {
-				w.c.OnFileChange(event.Name)
 				w.c.Logf(color.MagentaString("modified file: %v", event.Name))
-				err = w.restart(ctx)
+				err := w.restart(ctx, event.Name)
 				if err != nil {
-					return fmt.Errorf("watcher.restart: %w", err)
+					w.c.OnProcessExit(err)
+					w.c.Logf("error restarting binary: %v", err)
 				}
 			}
 		case err := <-watcher.Errors:
 			w.c.Logf("watcher error: %v", err)
 		case err := <-w.exitChan:
-			w.c.OnProcesExit(err)
+			w.c.OnProcessExit(err)
 			w.c.Logf("process exited unexpectedly: %v", err)
 		}
 	}
@@ -134,17 +157,19 @@ func (w *watcher) watch(ctx context.Context, files []string) error {
 
 func (w *watcher) start(ctx context.Context) error {
 	if err := w.build(ctx); err != nil {
-		return err
+		return fmt.Errorf("build: %w", err)
 	}
 	return w.startBinary(ctx)
 }
 
-func (w *watcher) restart(ctx context.Context) error {
+func (w *watcher) restart(ctx context.Context, file string) error {
+	w.c.OnFileChange(file)
 	if err := w.stop(ctx); err != nil {
-		return err
+		return fmt.Errorf("stop: %w", err)
 	}
+	w.c.OnProcessStart()
 	if err := w.start(ctx); err != nil {
-		w.c.Logf("error starting binary: %w", err)
+		return fmt.Errorf("start: %v", err)
 	}
 	return nil
 }
@@ -155,7 +180,7 @@ func (w *watcher) stop(ctx context.Context) error {
 	}
 	// TODO: call cmd.Process.Kill() if need be and/or timeout.
 	err := w.cmd.Process.Signal(os.Interrupt)
-	if err != nil {
+	if err != nil && !errors.Is(err, os.ErrProcessDone) {
 		return fmt.Errorf("process.Interrupt: %w", err)
 	}
 	select {
@@ -173,7 +198,7 @@ func (w *watcher) stop(ctx context.Context) error {
 func (w *watcher) build(ctx context.Context) error {
 	args := append([]string{"build", "-o=" + w.binpath}, w.c.BuildFlags...)
 	cmd := exec.CommandContext(ctx, "go", args...)
-	cmd.Dir = w.wd // TODO: customizable
+	cmd.Dir = w.c.Dir
 	cmd.Stdout = w.c.Stdout
 	cmd.Stderr = w.c.Stderr
 	err := cmd.Run()
@@ -185,10 +210,14 @@ func (w *watcher) build(ctx context.Context) error {
 
 func (w *watcher) startBinary(ctx context.Context) error {
 	cmd := exec.CommandContext(ctx, w.binpath, w.c.RuntimeArgs...)
-	cmd.Dir = w.wd
+	cmd.Dir = w.c.Dir
 	cmd.Stdout = w.c.Stdout
 	cmd.Stderr = w.c.Stderr
-	cmd.Env = os.Environ()
+	cmd.Env = append(os.Environ(), w.c.Env...)
+	cmd.Cancel = func() error {
+		return cmd.Process.Signal(os.Interrupt)
+	}
+
 	err := cmd.Start()
 	if err != nil {
 		return fmt.Errorf("cmd.Start: %w", err)
@@ -203,18 +232,6 @@ func (w *watcher) startBinary(ctx context.Context) error {
 
 func isOutputFlag(f string) bool {
 	return f == "-o" || f == "--o" || strings.HasPrefix(f, "-o=") || strings.HasPrefix(f, "--o=")
-}
-
-func getUniqueFiles(ctx context.Context, goDirs, nonGoDirs []string, vendor bool) ([]string, error) {
-	files, err := getFiles(ctx, goDirs, vendor, true)
-	if err != nil {
-		return nil, fmt.Errorf("getGoFiles: %w", err)
-	}
-	nonGoFiles, err := getFiles(ctx, nonGoDirs, vendor, false)
-	if err != nil {
-		return nil, fmt.Errorf("getNonGoFiles: %w", err)
-	}
-	return uniq(files, nonGoFiles), nil
 }
 
 func uniq(slices ...[]string) []string {
@@ -232,46 +249,45 @@ func uniq(slices ...[]string) []string {
 	return final
 }
 
-func getFiles(ctx context.Context, paths []string, vendor, goFiles bool) ([]string, error) {
-	files := []string{}
-	for _, pathName := range paths {
-		if !vendor && pathName == "vendor" {
-			continue
-		}
-		fi, err := os.Stat(pathName)
-		if err != nil {
-			return nil, fmt.Errorf("error stating %q: %w", pathName, err)
-		}
-		if !fi.IsDir() {
-			if goFiles && filepath.Ext(pathName) != ".go" {
-				continue
-			}
-			files = append(files, pathName)
-			continue
-		}
-		dirFiles, err := os.ReadDir(pathName)
-		if err != nil {
-			return nil, fmt.Errorf("os.ReadDir(%q): %w", pathName, err)
-		}
-		for _, df := range dirFiles {
-			entryName := df.Name()
-			if entryName == ".git" {
-				continue
-			}
-			if df.IsDir() {
-				innerDir := filepath.Join(pathName, entryName)
-				dirFiles, err := getFiles(ctx, []string{innerDir}, vendor, goFiles)
-				if err != nil {
-					return nil, fmt.Errorf("getGoFiles(%q): %w", entryName, err)
-				}
-				files = append(files, dirFiles...)
-				continue
-			}
-			if goFiles && filepath.Ext(entryName) != ".go" {
-				continue
-			}
-			files = append(files, filepath.Join(pathName, df.Name()))
-		}
+func listGoFiles(wd string) ([]string, error) {
+	s := set{}
+	cfg := &packages.Config{
+		Mode: packages.NeedFiles | packages.NeedImports | packages.NeedDeps | packages.NeedModule,
+		Dir:  wd,
 	}
-	return files, nil
+	pkgs, err := packages.Load(cfg, ".")
+	if err != nil {
+		return nil, fmt.Errorf("error loading tailcontrol pkg: %w", err)
+	}
+	filesFromPkg(pkgs[0], pkgs[0].Module.Path, s)
+	return s.slice(), nil
+}
+
+func filesFromPkg(pkg *packages.Package, prefix string, s set) {
+	s.add(pkg.GoFiles...)
+	for importPath, innerPkg := range pkg.Imports {
+		if !strings.HasPrefix(importPath, prefix) {
+			continue
+		}
+		filesFromPkg(innerPkg, prefix, s)
+	}
+}
+
+type set map[string]struct{}
+
+// addSlice adds each element of es to s.
+func (s set) add(es ...string) {
+	for _, e := range es {
+		s[e] = struct{}{}
+	}
+}
+
+// slice returns the elements of the set as a slice. The elements will not be
+// in any particular order.
+func (s set) slice() []string {
+	es := make([]string, 0, len(s))
+	for k := range s {
+		es = append(es, k)
+	}
+	return es
 }

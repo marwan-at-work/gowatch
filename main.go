@@ -21,12 +21,12 @@ func main() {
 		Usage: "Automatically restart Go processes on file changes",
 		Flags: []cli.Flag{
 			&cli.StringSliceFlag{
-				Name:  "go",
-				Usage: "Comma separated directories or files to watch Go files",
+				Name:  "cwd",
+				Usage: "set the current working directoy for the Go process",
 			},
 			&cli.StringSliceFlag{
-				Name:  "nongo",
-				Usage: "Comma separated directories or files to watch all files",
+				Name:  "additiona-files",
+				Usage: "Comma separated directories or files to watch",
 			},
 			&cli.BoolFlag{
 				Name:  "vendor",
@@ -91,12 +91,12 @@ func runFile(ctx context.Context) error {
 
 func runCLI(c *cli.Context) error {
 	cfg := watcher.Config{
-		GoPaths:     c.StringSlice("go"),
-		NonGoPaths:  c.StringSlice("nongo"),
-		BuildFlags:  c.StringSlice("build-flag"),
-		RuntimeArgs: c.Args().Slice(),
-		Vendor:      c.Bool("vendor"),
-		PrintFiles:  c.Bool("print-files"),
+		Dir:             c.String("cwd"),
+		AdditionalFiles: c.StringSlice("additional-files"),
+		BuildFlags:      c.StringSlice("build-flag"),
+		RuntimeArgs:     c.Args().Slice(),
+		Vendor:          c.Bool("vendor"),
+		PrintFiles:      c.Bool("print-files"),
 	}
 	return watcher.Run(c.Context, cfg)
 }
