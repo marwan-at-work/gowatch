@@ -140,6 +140,7 @@ func (w *watcher) watch(ctx context.Context, files []string) error {
 		case event := <-watcher.Events:
 			if event.Op&fsnotify.Write == fsnotify.Write {
 				w.c.Logf(color.MagentaString("modified file: %v", event.Name))
+				w.c.OnFileChange(event.Name)
 				err := w.restart(ctx, event.Name)
 				if err != nil {
 					w.c.OnProcessExit(err)
@@ -159,15 +160,14 @@ func (w *watcher) start(ctx context.Context) error {
 	if err := w.build(ctx); err != nil {
 		return fmt.Errorf("build: %w", err)
 	}
+	w.c.OnProcessStart()
 	return w.startBinary(ctx)
 }
 
 func (w *watcher) restart(ctx context.Context, file string) error {
-	w.c.OnFileChange(file)
 	if err := w.stop(ctx); err != nil {
 		return fmt.Errorf("stop: %w", err)
 	}
-	w.c.OnProcessStart()
 	if err := w.start(ctx); err != nil {
 		return fmt.Errorf("start: %v", err)
 	}
@@ -178,9 +178,10 @@ func (w *watcher) stop(ctx context.Context) error {
 	if w.cmd == nil {
 		return nil
 	}
+
 	// TODO: call cmd.Process.Kill() if need be and/or timeout.
 	err := w.cmd.Process.Signal(os.Interrupt)
-	if err != nil && !errors.Is(err, os.ErrProcessDone) {
+	if err != nil {
 		return fmt.Errorf("process.Interrupt: %w", err)
 	}
 	select {
@@ -191,6 +192,7 @@ func (w *watcher) stop(ctx context.Context) error {
 		if err != nil && !errors.As(err, &exitErr) {
 			return fmt.Errorf("process.Wait: %w", err)
 		}
+		w.cmd = nil
 	}
 	return nil
 }
