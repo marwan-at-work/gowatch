@@ -259,7 +259,7 @@ func listGoFiles(wd string) ([]string, error) {
 	}
 	pkgs, err := packages.Load(cfg, ".")
 	if err != nil {
-		return nil, fmt.Errorf("error loading tailcontrol pkg: %w", err)
+		return nil, fmt.Errorf("error loading module: %w", err)
 	}
 	filesFromPkg(pkgs[0], pkgs[0].Module.Path, s)
 	return s.slice(), nil

@@ -20,7 +20,7 @@ func main() {
 		Name:  "gowatch",
 		Usage: "Automatically restart Go processes on file changes",
 		Flags: []cli.Flag{
-			&cli.StringSliceFlag{
+			&cli.StringFlag{
 				Name:  "cwd",
 				Usage: "set the current working directoy for the Go process",
 			},
