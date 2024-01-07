@@ -150,6 +150,7 @@ func (w *watcher) watch(ctx context.Context, files []string) error {
 		case err := <-watcher.Errors:
 			w.c.Logf("watcher error: %v", err)
 		case err := <-w.exitChan:
+			w.cmd = nil
 			w.c.OnProcessExit(err)
 			w.c.Logf("process exited unexpectedly: %v", err)
 		}
@@ -181,7 +182,7 @@ func (w *watcher) stop(ctx context.Context) error {
 
 	// TODO: call cmd.Process.Kill() if need be and/or timeout.
 	err := w.cmd.Process.Signal(os.Interrupt)
-	if err != nil {
+	if err != nil && !errors.Is(err, os.ErrProcessDone) {
 		return fmt.Errorf("process.Interrupt: %w", err)
 	}
 	select {
