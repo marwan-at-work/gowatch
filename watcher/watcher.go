@@ -133,7 +133,7 @@ func (w *watcher) watch(ctx context.Context, files []string) error {
 	for {
 		select {
 		case <-ctx.Done():
-			if err == nil {
+			if err == nil && w.cmd != nil {
 				err = errors.Join(<-w.exitChan, ctx.Err())
 			}
 			return err
