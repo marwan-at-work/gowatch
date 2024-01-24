@@ -141,7 +141,7 @@ func (w *watcher) watch(ctx context.Context, files []string) error {
 			if event.Op&fsnotify.Write == fsnotify.Write {
 				w.c.Logf(color.MagentaString("modified file: %v", event.Name))
 				w.c.OnFileChange(event.Name)
-				err := w.restart(ctx, event.Name)
+				err := w.restart(ctx)
 				if err != nil {
 					w.c.OnProcessExit(err)
 					w.c.Logf("error restarting binary: %v", err)
@@ -165,7 +165,7 @@ func (w *watcher) start(ctx context.Context) error {
 	return w.startBinary(ctx)
 }
 
-func (w *watcher) restart(ctx context.Context, file string) error {
+func (w *watcher) restart(ctx context.Context) error {
 	if err := w.stop(ctx); err != nil {
 		return fmt.Errorf("stop: %w", err)
 	}
